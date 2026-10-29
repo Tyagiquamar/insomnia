@@ -209,7 +209,12 @@ const openCurlConnection = async (
     debugTimeline.forEach(entry => writeTimelineEntry(requestId, entry));
     CurlConnections.set(requestId, curl);
     CurlConnections.get(requestId)?.enable(CurlFeature.StreamResponse);
-    const headerStrings = parseHeaderStrings({ req, finalUrl: req.url, authHeader });
+    // Cookie headers are sent through CURLOPT_COOKIE so libcurl can merge them with the cookies
+    // managed by its cookie engine into a single header.
+    const headers = req.settingSendCookies
+      ? req.headers.filter(header => header.name?.toLowerCase() !== 'cookie')
+      : req.headers;
+    const headerStrings = parseHeaderStrings({ req: { ...req, headers }, finalUrl: req.url, authHeader });
 
     CurlConnections.get(requestId)?.setOpt(Curl.option.HTTPHEADER, headerStrings);
     CurlConnections.get(requestId)?.on('error', async (error, errorCode) => {

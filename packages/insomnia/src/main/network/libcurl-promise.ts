@@ -178,7 +178,18 @@ export const curlRequest = (options: CurlRequestOptions) =>
         req.headers = [...req.headers, { name: 'X-Mockbin-Test', value: 'true' }];
       }
 
-      const headerStrings = parseHeaderStrings({ req, requestBody, requestBodyPath, finalUrl, authHeader });
+      // Cookie headers are sent through CURLOPT_COOKIE so libcurl can merge them with the
+      // cookies managed by its cookie engine into a single header.
+      const headers = req.settingSendCookies
+        ? req.headers.filter((header: RequestHeader) => header.name?.toLowerCase() !== 'cookie')
+        : req.headers;
+      const headerStrings = parseHeaderStrings({
+        req: { ...req, headers },
+        requestBody,
+        requestBodyPath,
+        finalUrl,
+        authHeader,
+      });
       curl.setOpt(Curl.option.HTTPHEADER, headerStrings);
 
       // Create instance and handlers, poke value options in, set up write and debug callbacks, listen for events
@@ -487,8 +498,17 @@ export const createConfiguredCurlInstance = async ({
     const { cookieJar, cookies } = req;
     curl.setOpt(Curl.option.COOKIEFILE, '');
 
-    for (const { name, value } of cookies) {
-      curl.setOpt(Curl.option.COOKIE, `${name}=${value}`);
+    // A Cookie header has to go through CURLOPT_COOKIE as well, otherwise libcurl sends it as a
+    // second Cookie header next to the ones from the cookie engine instead of merging them.
+    const cookieHeaderValues = req.headers
+      .filter(
+        (header: RequestHeader) =>
+          typeof header?.name === 'string' && header.name.toLowerCase() === 'cookie' && header.value,
+      )
+      .map((header: RequestHeader) => header.value);
+    const cookieValues = [...cookies.map(({ name, value }) => `${name}=${value}`), ...cookieHeaderValues];
+    if (cookieValues.length) {
+      curl.setOpt(Curl.option.COOKIE, cookieValues.join('; '));
     }
     // set-cookies from previous redirects
     if (cookieJar.cookies.length) {

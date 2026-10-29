@@ -4,9 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { Curl } from '@getinsomnia/node-libcurl';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import { createConfiguredCurlInstance, parseRequestBodyPath } from './libcurl-promise';
+import { createConfiguredCurlInstance, curlRequest, parseRequestBodyPath } from './libcurl-promise';
 
 const baseReq = (overrides: Record<string, unknown> = {}) => ({
   headers: [],
@@ -59,6 +59,81 @@ describe('createConfiguredCurlInstance', () => {
     });
 
     expect(curl._options[Curl.option.PROXY]).toBe('');
+  });
+
+  it('merges a Cookie header with request and jar cookies into one CURLOPT_COOKIE', async () => {
+    const { curl } = await createConfiguredCurlInstance({
+      req: baseReq({
+        settingSendCookies: true,
+        headers: [
+          { name: 'Cookie', value: 'session_id=abc' },
+          { name: 'X-Custom', value: 'kept-in-headers' },
+        ],
+        cookies: [{ name: 'request_cookie', value: 'one' }],
+        cookieJar: {
+          cookies: [
+            { domain: 'api.example.com', hostOnly: true, path: '/', secure: true, key: 'managed', value: 'jar' },
+          ],
+        },
+      }),
+      settings: baseSettings(),
+      caCert: null,
+      certificates: [],
+    });
+
+    expect(curl._options[Curl.option.COOKIEFILE]).toBe('');
+    expect(curl._options[Curl.option.COOKIE]).toBe('request_cookie=one; session_id=abc');
+    expect(curl._options[Curl.option.COOKIELIST]).toEqual([expect.stringContaining('\tmanaged\tjar')]);
+  });
+
+  it('leaves Cookie headers alone when cookie sending is disabled', async () => {
+    const { curl } = await createConfiguredCurlInstance({
+      req: baseReq({ headers: [{ name: 'Cookie', value: 'session_id=abc' }] }),
+      settings: baseSettings(),
+      caCert: null,
+      certificates: [],
+    });
+
+    expect(curl._options[Curl.option.COOKIE]).toBeUndefined();
+  });
+});
+
+describe('curlRequest', () => {
+  const dataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'insomnia-libcurl-promise-'));
+
+  beforeAll(() => {
+    process.env.INSOMNIA_DATA_PATH = dataPath;
+  });
+
+  afterAll(() => {
+    delete process.env.INSOMNIA_DATA_PATH;
+    fs.rmSync(dataPath, { recursive: true, force: true });
+  });
+
+  it('sends a Cookie header through the cookie engine instead of HTTPHEADER', async () => {
+    const { responseBodyPath } = await curlRequest({
+      requestId: 'req_cookie_header_merge',
+      req: baseReq({
+        settingSendCookies: true,
+        headers: [
+          { name: 'Cookie', value: 'session_id=abc' },
+          { name: 'X-Custom', value: 'kept-in-headers' },
+        ],
+      }),
+      finalUrl: 'https://api.example.com/v1/messages',
+      settings: baseSettings(),
+      certificates: [],
+      caCertficatePath: null,
+    });
+
+    const { options } = JSON.parse(fs.readFileSync(responseBodyPath, 'utf8'));
+    try {
+      expect(options[Curl.option.HTTPHEADER]).toEqual(expect.arrayContaining(['X-Custom: kept-in-headers']));
+      expect(options[Curl.option.HTTPHEADER].join('\n')).not.toContain('Cookie:');
+      expect(options[Curl.option.COOKIE]).toBe('session_id=abc');
+    } finally {
+      fs.rmSync(responseBodyPath, { force: true });
+    }
   });
 });
 
